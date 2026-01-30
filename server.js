@@ -5,25 +5,42 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const app = express();
 const port = process.env.PORT || 3000;
 
-// WICHTIG: GEMINI_API_KEY kommt als Environment Variable von Render
 const apiKey = process.env.GEMINI_API_KEY;
+
+// Basis-Checks loggen
+console.log("Server starting...");
+console.log("PORT =", port);
+console.log("GEMINI_API_KEY gesetzt?", !!apiKey);
+
 if (!apiKey) {
   console.error("GEMINI_API_KEY is not set");
 }
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
-// Modell mit langem Kontext, z.B. gemini-2.0-flash-extended (oder aktuelles Long-Context-Modell)
-const MODEL_NAME = "gemini-2.0-flash";
+// Einfaches, weit verbreitetes Modell
+const MODEL_NAME = "gemini-1.5-flash";
 
 app.use(cors());
 app.use(express.json());
 
+app.get("/", (req, res) => {
+  res.send("MTG Rules classifier backend is running.");
+});
+
 app.post("/classifyRule", async (req, res) => {
   try {
+    console.log("Incoming /classifyRule request:", req.body);
+
     const { question, language = "de" } = req.body || {};
     if (!question || typeof question !== "string") {
+      console.log("Bad request: missing question");
       return res.status(400).json({ error: "Missing 'question' string" });
+    }
+
+    if (!apiKey) {
+      console.error("No GEMINI_API_KEY configured on server");
+      return res.status(500).json({ error: "Server misconfigured" });
     }
 
     const systemInstruction =
@@ -34,7 +51,7 @@ app.post("/classifyRule", async (req, res) => {
 
     const prompt =
       systemInstruction +
-      "\n\nQuestion:\n" +
+      "\n\nQuestion (" + language + "):\n" +
       question.trim() +
       "\n\nAnswer (only rule number or NONE):";
 
@@ -51,6 +68,8 @@ app.post("/classifyRule", async (req, res) => {
     });
 
     const text = (result.response.text() || "").trim();
+    console.log("Raw Gemini answer:", JSON.stringify(text));
+
     const first = text.split(/\s+/)[0].trim();
     const lower = first.toLowerCase();
 
@@ -59,18 +78,18 @@ app.post("/classifyRule", async (req, res) => {
       const m = lower.match(/^(\d{3}\.\d+[a-z]?)$/);
       if (m) {
         ruleNumber = m[1];
+      } else {
+        // Antwort ist irgendein anderer Text -> als NONE behandeln
+        ruleNumber = "NONE";
       }
     }
 
+    console.log("Returning ruleNumber:", ruleNumber);
     return res.json({ ruleNumber });
   } catch (e) {
     console.error("Error in /classifyRule:", e);
     return res.status(500).json({ error: "Internal error" });
   }
-});
-
-app.get("/", (req, res) => {
-  res.send("MTG Rules classifier backend is running.");
 });
 
 app.listen(port, () => {
