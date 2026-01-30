@@ -6,7 +6,7 @@ const app = express();
 const port = process.env.PORT || 10000;
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama3-70b-8192"; // starkes Modell, gut für Regeln
+const GROQ_MODEL = "llama-3.3-70b-versatile";  // starkes Modell, gut für Regeln
 
 app.use(cors());
 app.use(express.json());
