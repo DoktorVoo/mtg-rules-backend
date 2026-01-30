@@ -3,23 +3,7 @@ import cors from "cors";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const app = express();
-const port = process.env.PORT || 3000;
-
-const apiKey = process.env.GEMINI_API_KEY;
-
-// Basis-Checks loggen
-console.log("Server starting...");
-console.log("PORT =", port);
-console.log("GEMINI_API_KEY gesetzt?", !!apiKey);
-
-if (!apiKey) {
-  console.error("GEMINI_API_KEY is not set");
-}
-
-const genAI = new GoogleGenerativeAI(apiKey);
-
-// Einfaches, weit verbreitetes Modell
-const MODEL_NAME = "gemini-1.5-flash";
+const port = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -29,25 +13,34 @@ app.get("/", (req, res) => {
 });
 
 app.post("/classifyRule", async (req, res) => {
+  console.log("Incoming /classifyRule request:", req.body);
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  console.log("GEMINI_API_KEY set?", !!apiKey);
+
+  if (!apiKey) {
+    console.error("No GEMINI_API_KEY configured");
+    return res.status(500).json({ error: "Server misconfigured: missing API key" });
+  }
+
+  const { question, language = "de" } = req.body || {};
+
+  if (!question || typeof question !== "string") {
+    console.log("Bad request: missing 'question'");
+    return res.status(400).json({ error: "Missing 'question' string in body" });
+  }
+
   try {
-    console.log("Incoming /classifyRule request:", req.body);
-
-    const { question, language = "de" } = req.body || {};
-    if (!question || typeof question !== "string") {
-      console.log("Bad request: missing question");
-      return res.status(400).json({ error: "Missing 'question' string" });
-    }
-
-    if (!apiKey) {
-      console.error("No GEMINI_API_KEY configured on server");
-      return res.status(500).json({ error: "Server misconfigured" });
-    }
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const systemInstruction =
       "You are an expert for Magic: The Gathering Comprehensive Rules. " +
       "You receive a rules question in German or English. " +
-      "Your task: Answer with EXACTLY one comprehensive rules number in the format 000.0 or 000.0a (e.g. 702.2 or 613.1g). " +
-      "If you are not sure which rule applies, or the question is not a rules question, answer EXACTLY: NONE";
+      "Your task: Answer with EXACTLY one comprehensive rules number " +
+      "in the format 000.0 or 000.0a (e.g. 702.2 or 613.1g). " +
+      "If you are not sure which rule applies, or the question is not a rules question, " +
+      "answer EXACTLY: NONE.";
 
     const prompt =
       systemInstruction +
@@ -55,11 +48,12 @@ app.post("/classifyRule", async (req, res) => {
       question.trim() +
       "\n\nAnswer (only rule number or NONE):";
 
-    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
-
     const result = await model.generateContent({
       contents: [
-        { role: "user", parts: [{ text: prompt }] }
+        {
+          role: "user",
+          parts: [{ text: prompt }],
+        },
       ],
       generationConfig: {
         maxOutputTokens: 16,
@@ -79,15 +73,14 @@ app.post("/classifyRule", async (req, res) => {
       if (m) {
         ruleNumber = m[1];
       } else {
-        // Antwort ist irgendein anderer Text -> als NONE behandeln
         ruleNumber = "NONE";
       }
     }
 
     console.log("Returning ruleNumber:", ruleNumber);
     return res.json({ ruleNumber });
-  } catch (e) {
-    console.error("Error in /classifyRule:", e);
+  } catch (err) {
+    console.error("Error in /classifyRule:", err);
     return res.status(500).json({ error: "Internal error" });
   }
 });
