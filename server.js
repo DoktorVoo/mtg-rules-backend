@@ -14,7 +14,7 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 
 // Modell mit langem Kontext, z.B. gemini-2.0-flash-extended (oder aktuelles Long-Context-Modell)
-const MODEL_NAME = "gemini-2.0-flash";
+const MODEL_NAME = "gemini-2.0-flash-extended";
 
 app.use(cors());
 app.use(express.json());
