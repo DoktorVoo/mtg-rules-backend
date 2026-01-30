@@ -1,25 +1,28 @@
 import express from "express";
 import cors from "cors";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import fetch from "node-fetch"; // falls Node < 18, ansonsten kannst du den Import weglassen
 
 const app = express();
 const port = process.env.PORT || 10000;
+
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama3-70b-8192"; // starkes Modell, gut für Regeln
 
 app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.send("MTG Rules classifier backend is running.");
+  res.send("MTG Rules classifier backend (Groq) is running.");
 });
 
 app.post("/classifyRule", async (req, res) => {
   console.log("Incoming /classifyRule request:", req.body);
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  console.log("GEMINI_API_KEY set?", !!apiKey);
+  const apiKey = process.env.GROQ_API_KEY;
+  console.log("GROQ_API_KEY set?", !!apiKey);
 
   if (!apiKey) {
-    console.error("No GEMINI_API_KEY configured");
+    console.error("No GROQ_API_KEY configured");
     return res.status(500).json({ error: "Server misconfigured: missing API key" });
   }
 
@@ -30,39 +33,47 @@ app.post("/classifyRule", async (req, res) => {
     return res.status(400).json({ error: "Missing 'question' string in body" });
   }
 
+  const systemPrompt =
+    "You are an expert for Magic: The Gathering Comprehensive Rules.\n" +
+    "You receive a rules question in German or English.\n" +
+    "Your task: Answer with EXACTLY one comprehensive rules number " +
+    "in the format 000.0 or 000.0a (e.g. 702.2 or 613.1g).\n" +
+    "If you are not sure which rule applies, or the question is not a rules question,\n" +
+    "answer EXACTLY: NONE.\n" +
+    "Do not explain your answer. Output only the rule number or NONE.";
+
+  const userPrompt =
+    `Question (${language}):\n` +
+    question.trim() +
+    "\n\nAnswer (only rule number or NONE):";
+
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-    const systemInstruction =
-      "You are an expert for Magic: The Gathering Comprehensive Rules. " +
-      "You receive a rules question in German or English. " +
-      "Your task: Answer with EXACTLY one comprehensive rules number " +
-      "in the format 000.0 or 000.0a (e.g. 702.2 or 613.1g). " +
-      "If you are not sure which rule applies, or the question is not a rules question, " +
-      "answer EXACTLY: NONE.";
-
-    const prompt =
-      systemInstruction +
-      "\n\nQuestion (" + language + "):\n" +
-      question.trim() +
-      "\n\nAnswer (only rule number or NONE):";
-
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }],
-        },
-      ],
-      generationConfig: {
-        maxOutputTokens: 16,
-        temperature: 0.0,
+    const response = await fetch(GROQ_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 16,
+        temperature: 0.0,
+      }),
     });
 
-    const text = (result.response.text() || "").trim();
-    console.log("Raw Gemini answer:", JSON.stringify(text));
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Groq API error:", response.status, errorText);
+      return res.status(502).json({ error: "LLM call failed", details: errorText });
+    }
+
+    const data = await response.json();
+    const text = (data.choices?.[0]?.message?.content || "").trim();
+    console.log("Raw Groq answer:", JSON.stringify(text));
 
     const first = text.split(/\s+/)[0].trim();
     const lower = first.toLowerCase();
