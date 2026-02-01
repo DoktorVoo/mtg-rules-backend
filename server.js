@@ -1,4 +1,4 @@
-// server.js (komplett)
+// server.js (mehrsprachige Version)
 
 import express from "express";
 import cors from "cors";
@@ -9,20 +9,20 @@ const app = express();
 const port = process.env.PORT || 10000;
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile"; // starkes Modell, gut für Regeln
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 app.use(cors());
 app.use(express.json());
 
 /* ======================================
-   CR-Datei auf dem Server einlesen
+   CR-Dateien auf dem Server einlesen
    ====================================== */
 
-let serverRules = [];
+let serverRulesEN = [];
+let serverRulesDE = [];
 
 /**
- * Parser ähnlich wie im Frontend: zerlegt MTG-Rules.txt
- * in Objekte { number: "702.15", text: "702.15 Lifelink ..."}
+ * Zerlegt MTG-Rules*.txt in Objekte { number: "702.15", text: "..." }
  */
 function parseRulesServer(raw) {
   const lines = raw.split(/\r?\n/);
@@ -56,15 +56,71 @@ function parseRulesServer(raw) {
   return rules;
 }
 
+function loadRulesFile(filename) {
+  try {
+    const raw = fs.readFileSync(filename, "utf8");
+    const parsed = parseRulesServer(raw);
+    console.log(`Loaded ${parsed.length} rules from ${filename}`);
+    return parsed;
+  } catch (e) {
+    console.error(`Could not load ${filename}:`, e);
+    return [];
+  }
+}
+
+// Beim Start: beide Sprachversionen laden
+serverRulesEN = loadRulesFile("MTG-Rules.txt");     // englisch
+serverRulesDE = loadRulesFile("MTG-RulesDE.txt");   // deutsch
+
+/* ======================================
+   Hilfsfunktionen
+   ====================================== */
+
 /**
- * Einfache Heuristik, um zu einer Frage die relevantesten Regeln
- * aus serverRules zu finden (Stichwort-basiertes Scoring).
+ * Frage sprachspezifisch normalisieren (Tippfehler, Synonyme → Kanon).
  */
-function findRelevantRules(question, maxResults = 20) {
-  if (!serverRules.length || !question) return [];
+function normalizeQuestion(question, language) {
+  if (!question) return "";
+  let q = question.toLowerCase();
+
+  if (language === "de") {
+    // Tippfehler + deutsche Begriffe → englische Mechaniknamen
+    q = q.replace(/tampelschaden/g, "trampelschaden");
+    q = q.replace(/trampelschaden/g, "trample");
+    q = q.replace(/lebensverknüpfung/g, "lifelink");
+    q = q.replace(/todesberührung/g, "deathtouch");
+    q = q.replace(/flugfähigkeit/g, "flying");
+    q = q.replace(/eil[e]?/g, "haste");
+    q = q.replace(/doppelangriff/g, "double strike");
+    q = q.replace(/erstschlag/g, "first strike");
+    q = q.replace(/überrennen/g, "trample");
+    // du kannst hier nach Bedarf erweitern
+  } else {
+    // englische Seite: hier könntest du ebenfalls einfache Fixes machen
+    q = q.replace(/trampel damage/g, "trample damage");
+  }
+
+  return q;
+}
+
+/**
+ * Wählt die passende Regelbasis (EN/DE) je nach language.
+ * Wichtig: Nummern sind in beiden Dateien gleich aufgebaut.
+ */
+function getRulesForLanguage(language) {
+  if (language === "de") return serverRulesDE.length ? serverRulesDE : serverRulesEN;
+  return serverRulesEN.length ? serverRulesEN : serverRulesDE;
+}
+
+/**
+ * Stichwort-basierte Heuristik, um zu einer Frage die relevantesten Regeln
+ * aus der gewählten Regelbasis zu finden.
+ */
+function findRelevantRules(question, language, maxResults = 20) {
+  const rules = getRulesForLanguage(language);
+  if (!rules.length || !question) return [];
 
   const q = question.toLowerCase().trim();
-  // ganz simple Tokenisierung
   const keywords = q
     .split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9äöüÄÖÜß]/gi, ""))
@@ -74,7 +130,7 @@ function findRelevantRules(question, maxResults = 20) {
 
   const scored = [];
 
-  for (const r of serverRules) {
+  for (const r of rules) {
     const textLower = r.text.toLowerCase();
     let score = 0;
 
@@ -83,19 +139,37 @@ function findRelevantRules(question, maxResults = 20) {
       const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp("\\b" + escaped + "\\b", "g");
       let match;
-      let occurrences = 0;
+      let occ = 0;
       while ((match = re.exec(textLower)) !== null) {
-        occurrences++;
+        occ++;
       }
-      if (occurrences > 0) {
-        // Grundscore + kleiner Bonus für mehrere Vorkommen
-        score += 5 + Math.min(occurrences, 5) * 2;
+      if (occ > 0) {
+        score += 5 + Math.min(occ, 5) * 2;
       }
     }
 
     if (score > 0) {
-      // kleiner Bonus für "Hauptregel" ohne Buchstaben
+      // kleiner Bonus für Hauptregel (ohne Buchstaben)
       if (/^\d{3}\.\d+$/.test(r.number)) score += 3;
+
+      // Bonus für Mechanik-Schlüsselwörter im Header
+      const headerLine = (r.text.split(/\r?\n/)[0] || "").toLowerCase();
+      const mechKeywords = [
+        "trample",
+        "lifelink",
+        "deathtouch",
+        "flying",
+        "haste",
+        "first strike",
+        "double strike",
+        "indestructible",
+      ];
+      for (const mk of mechKeywords) {
+        if (headerLine.includes(mk)) {
+          score += 5;
+        }
+      }
+
       scored.push({ rule: r, score });
     }
   }
@@ -104,14 +178,13 @@ function findRelevantRules(question, maxResults = 20) {
   return scored.slice(0, maxResults).map((x) => x.rule);
 }
 
-// Beim Start: MTG-Rules.txt einlesen
-try {
-  const rawCR = fs.readFileSync("MTG-Rules.txt", "utf8");
-  serverRules = parseRulesServer(rawCR);
-  console.log("Loaded rules on server:", serverRules.length);
-} catch (e) {
-  console.error("Could not load MTG-Rules.txt on server:", e);
-  serverRules = [];
+/**
+ * Prüft, ob eine Regelform wie "702.19" in der gewählten Regelbasis existiert.
+ */
+function ruleExists(candidate, language) {
+  const rules = getRulesForLanguage(language);
+  const candLower = candidate.toLowerCase();
+  return rules.some((r) => r.number.toLowerCase() === candLower);
 }
 
 /* ======================================
@@ -135,8 +208,7 @@ app.post("/classifyRule", async (req, res) => {
       .json({ error: "Server misconfigured: missing API key" });
   }
 
-  const { question, language = "de" } = req.body || {};
-
+  let { question, language = "de" } = req.body || {};
   if (!question || typeof question !== "string") {
     console.log("Bad request: missing 'question'");
     return res
@@ -144,8 +216,13 @@ app.post("/classifyRule", async (req, res) => {
       .json({ error: "Missing 'question' string in body" });
   }
 
-  // 1) Relevante Regeln zur Frage suchen
-  const candidateRules = findRelevantRules(question, 20);
+  language = language === "en" ? "en" : "de";
+
+  // Frage normalisieren (v.a. für Deutsch)
+  const normalizedQuestion = normalizeQuestion(question, language);
+
+  // Relevante Regeln für diese Sprache finden
+  const candidateRules = findRelevantRules(normalizedQuestion, language, 20);
   let contextText = "";
 
   if (candidateRules.length) {
@@ -154,8 +231,17 @@ app.post("/classifyRule", async (req, res) => {
       .join("\n\n");
   }
 
-  // 2) Prompt mit Kontext bauen
-  const systemPrompt =
+  // Sprachspezifischer System-Prompt
+  const systemPromptDE =
+    "Du bist ein Experte für die Magic: The Gathering Comprehensive Rules.\n" +
+    "Du bekommst AUSZÜGE aus den umfassenden Regeln.\n" +
+    "Du MUSST deine Antwort AUSSCHLIESSLICH auf diese Auszüge stützen.\n" +
+    "Deine Aufgabe: Antworte mit GENAU EINER Regelnummer im Format 000.0 oder 000.0a.\n" +
+    "Die ausgegebene Regelnummer MUSS in den bereitgestellten Auszügen vorkommen.\n" +
+    "Wenn keine der präsentierten Regeln klar zur Frage passt, antworte GENAU: NONE.\n" +
+    "Erkläre deine Antwort nicht. Gib nur die Regelnummer oder NONE aus.";
+
+  const systemPromptEN =
     "You are an expert for Magic: The Gathering Comprehensive Rules.\n" +
     "You will be given EXCERPTS from the Comprehensive Rules.\n" +
     "You MUST base your answer ONLY on these excerpts.\n" +
@@ -166,13 +252,30 @@ app.post("/classifyRule", async (req, res) => {
     "answer EXACTLY: NONE.\n" +
     "Do not explain your answer. Output only the rule number or NONE.";
 
+  const systemPrompt = language === "de" ? systemPromptDE : systemPromptEN;
+
+  // User-Prompt (Frage bleibt im Original, aber auch die normalisierte Version hilft)
   const userPrompt =
     (contextText
-      ? "Relevant rule excerpts:\n\n" + contextText + "\n\n"
+      ? (language === "de"
+          ? "Relevante Regelauszüge:\n\n"
+          : "Relevant rule excerpts:\n\n") +
+        contextText +
+        "\n\n"
+      : language === "de"
+      ? "Keine Regelauszüge verfügbar.\n\n"
       : "No rule excerpts available.\n\n") +
-    `Question (${language}):\n` +
+    (language === "de" ? "Frage (Deutsch):\n" : "Question:\n") +
     question.trim() +
-    "\n\nAnswer (only one rule number from the excerpts, or NONE):";
+    "\n\n" +
+    (language === "de"
+      ? "Interne Normalisierung der Frage:\n"
+      : "Internally normalized question:\n") +
+    normalizedQuestion.trim() +
+    "\n\n" +
+    (language === "de"
+      ? "Antwort (nur eine Regelnummer aus den Auszügen oder NONE):"
+      : "Answer (only one rule number from the excerpts, or NONE):");
 
   try {
     const response = await fetch(GROQ_API_URL, {
@@ -212,11 +315,8 @@ app.post("/classifyRule", async (req, res) => {
       const m = lower.match(/^(\d{3}\.\d+[a-z]?)$/);
       if (m) {
         const candidate = m[1];
-        // 3) Sicherstellen, dass diese Regel in serverRules existiert
-        const exists = serverRules.some(
-          (r) => r.number.toLowerCase() === candidate.toLowerCase()
-        );
-        if (exists) {
+        // Existiert diese Regelnummer in der gewählten Sprachbasis?
+        if (ruleExists(candidate, language)) {
           ruleNumber = candidate;
         } else {
           console.warn("LLM returned non-existing rule:", candidate);
