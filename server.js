@@ -1,4 +1,4 @@
-// server.js (mehrsprachige Version)
+// server.js – einfache, robuste Version (DE/EN, Top-5-Regeln, kurzer Kontext)
 
 import express from "express";
 import cors from "cors";
@@ -9,6 +9,7 @@ const app = express();
 const port = process.env.PORT || 10000;
 
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+// Free-Plan Modell (anpassen, falls du ein anderes willst)
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 app.use(cors());
@@ -78,25 +79,44 @@ serverRulesDE = loadRulesFile("MTG-RulesDE.txt");   // deutsch
 
 /**
  * Frage sprachspezifisch normalisieren (Tippfehler, Synonyme → Kanon).
+ * Wir mappen primär auf englische Mechanik-Namen, weil die in beiden CR-Versionen vorkommen.
  */
 function normalizeQuestion(question, language) {
   if (!question) return "";
   let q = question.toLowerCase();
 
   if (language === "de") {
-    // Tippfehler + deutsche Begriffe → englische Mechaniknamen
+    // einfache Fixes / Synonyme
     q = q.replace(/tampelschaden/g, "trampelschaden");
     q = q.replace(/trampelschaden/g, "trample");
-    q = q.replace(/lebensverknüpfung/g, "lifelink");
-    q = q.replace(/todesberührung/g, "deathtouch");
-    q = q.replace(/flugfähigkeit/g, "flying");
-    q = q.replace(/eil[e]?/g, "haste");
-    q = q.replace(/doppelangriff/g, "double strike");
-    q = q.replace(/erstschlag/g, "first strike");
+    q = q.replace(/trampel schaden/g, "trample");
     q = q.replace(/überrennen/g, "trample");
-    // du kannst hier nach Bedarf erweitern
+
+    q = q.replace(/lebensverknüpfung/g, "lifelink");
+    q = q.replace(/lebensverbindung/g, "lifelink");
+
+    q = q.replace(/todesberu?h?ung/g, "deathtouch");
+    q = q.replace(/todes beru?h?ung/g, "deathtouch");
+
+    q = q.replace(/flugf[aä]higkeit/g, "flying");
+    q = q.replace(/fliegend[e]?/g, "flying");
+
+    q = q.replace(/eil[e]?/g, "haste");
+
+    q = q.replace(/erstschlag/g, "first strike");
+    q = q.replace(/firststrike/g, "first strike");
+
+    q = q.replace(/doppelangriff/g, "double strike");
+    q = q.replace(/doublestrike/g, "double strike");
+
+    q = q.replace(/unzerst[öo]rbar/g, "indestructible");
+
+    q = q.replace(/vergiftung/g, "infect");
+    q = q.replace(/infekt/g, "infect");
+
+    q = q.replace(/schw[aä]chung/g, "wither");
   } else {
-    // englische Seite: hier könntest du ebenfalls einfache Fixes machen
+    // einfache englische Fixes (optional)
     q = q.replace(/trampel damage/g, "trample damage");
   }
 
@@ -105,7 +125,7 @@ function normalizeQuestion(question, language) {
 
 /**
  * Wählt die passende Regelbasis (EN/DE) je nach language.
- * Wichtig: Nummern sind in beiden Dateien gleich aufgebaut.
+ * Nummern bleiben identisch, Texte sind übersetzt.
  */
 function getRulesForLanguage(language) {
   if (language === "de") return serverRulesDE.length ? serverRulesDE : serverRulesEN;
@@ -115,12 +135,15 @@ function getRulesForLanguage(language) {
 /**
  * Stichwort-basierte Heuristik, um zu einer Frage die relevantesten Regeln
  * aus der gewählten Regelbasis zu finden.
+ * - Nutzt alle Wörter der (normalisierten) Frage.
+ * - Bewertet Vorkommen im Regeltext.
+ * - Gibt maxResults Regeln mit höchstem Score zurück.
  */
-function findRelevantRules(question, language, maxResults = 20) {
+function findRelevantRules(normalizedQuestion, language, maxResults = 5) {
   const rules = getRulesForLanguage(language);
-  if (!rules.length || !question) return [];
+  if (!rules.length || !normalizedQuestion) return [];
 
-  const q = question.toLowerCase().trim();
+  const q = normalizedQuestion.toLowerCase().trim();
   const keywords = q
     .split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9äöüÄÖÜß]/gi, ""))
@@ -149,10 +172,10 @@ function findRelevantRules(question, language, maxResults = 20) {
     }
 
     if (score > 0) {
-      // kleiner Bonus für Hauptregel (ohne Buchstaben)
+      // kleiner Bonus für Hauptregel (ohne Buchstaben, z.B. 702.19)
       if (/^\d{3}\.\d+$/.test(r.number)) score += 3;
 
-      // Bonus für Mechanik-Schlüsselwörter im Header
+      // Bonus für Mechanik-Schlüsselwörter im Header (erste Zeile)
       const headerLine = (r.text.split(/\r?\n/)[0] || "").toLowerCase();
       const mechKeywords = [
         "trample",
@@ -163,6 +186,13 @@ function findRelevantRules(question, language, maxResults = 20) {
         "first strike",
         "double strike",
         "indestructible",
+        "vigilance",
+        "hexproof",
+        "ward",
+        "menace",
+        "reach",
+        "infect",
+        "wither",
       ];
       for (const mk of mechKeywords) {
         if (headerLine.includes(mk)) {
@@ -173,6 +203,8 @@ function findRelevantRules(question, language, maxResults = 20) {
       scored.push({ rule: r, score });
     }
   }
+
+  if (!scored.length) return [];
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, maxResults).map((x) => x.rule);
@@ -218,16 +250,24 @@ app.post("/classifyRule", async (req, res) => {
 
   language = language === "en" ? "en" : "de";
 
-  // Frage normalisieren (v.a. für Deutsch)
+  // Frage normalisieren (v.a. für Deutsch → englische Mechanikbegriffe)
   const normalizedQuestion = normalizeQuestion(question, language);
 
-  // Relevante Regeln für diese Sprache finden
-  const candidateRules = findRelevantRules(normalizedQuestion, language, 20);
+  // Relevante Regeln für diese Sprache finden (Top 5)
+  const candidateRules = findRelevantRules(normalizedQuestion, language, 5);
+  console.log("candidateRules count:", candidateRules.length);
+
   let contextText = "";
 
   if (candidateRules.length) {
+    // Kontext klein halten: nur Header + max. 3 Folgezeilen
     contextText = candidateRules
-      .map((r) => `Rule ${r.number}:\n${r.text}`)
+      .map((r) => {
+        const lines = r.text.split(/\r?\n/);
+        const header = lines[0] || "";
+        const rest = lines.slice(1, 4).join(" ");
+        return `Rule ${r.number}:\n${header}\n${rest}`;
+      })
       .join("\n\n");
   }
 
@@ -254,7 +294,7 @@ app.post("/classifyRule", async (req, res) => {
 
   const systemPrompt = language === "de" ? systemPromptDE : systemPromptEN;
 
-  // User-Prompt (Frage bleibt im Original, aber auch die normalisierte Version hilft)
+  // User-Prompt: Originalfrage + normalisierte Frage + Kontext
   const userPrompt =
     (contextText
       ? (language === "de"
@@ -265,12 +305,12 @@ app.post("/classifyRule", async (req, res) => {
       : language === "de"
       ? "Keine Regelauszüge verfügbar.\n\n"
       : "No rule excerpts available.\n\n") +
-    (language === "de" ? "Frage (Deutsch):\n" : "Question:\n") +
+    (language === "de" ? "Frage:\n" : "Question:\n") +
     question.trim() +
     "\n\n" +
     (language === "de"
-      ? "Interne Normalisierung der Frage:\n"
-      : "Internally normalized question:\n") +
+      ? "Normalisierte Frage:\n"
+      : "Normalized question:\n") +
     normalizedQuestion.trim() +
     "\n\n" +
     (language === "de"
