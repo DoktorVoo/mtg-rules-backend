@@ -1,4 +1,4 @@
-// server.js – einfache, robuste Version (DE/EN, Top-5-Regeln, kurzer Kontext)
+// server.js – Version mit DE/EN, Top-5-Regeln, Keyword-Fokus (z.B. Trample)
 
 import express from "express";
 import cors from "cors";
@@ -135,9 +135,6 @@ function getRulesForLanguage(language) {
 /**
  * Stichwort-basierte Heuristik, um zu einer Frage die relevantesten Regeln
  * aus der gewählten Regelbasis zu finden.
- * - Nutzt alle Wörter der (normalisierten) Frage.
- * - Bewertet Vorkommen im Regeltext.
- * - Gibt maxResults Regeln mit höchstem Score zurück.
  */
 function findRelevantRules(normalizedQuestion, language, maxResults = 5) {
   const rules = getRulesForLanguage(language);
@@ -252,43 +249,66 @@ app.post("/classifyRule", async (req, res) => {
 
   // Frage normalisieren (v.a. für Deutsch → englische Mechanikbegriffe)
   const normalizedQuestion = normalizeQuestion(question, language);
+  const nq = normalizedQuestion;
 
-  // Relevante Regeln für diese Sprache finden (Top 5)
-  const candidateRules = findRelevantRules(normalizedQuestion, language, 5);
+  // Relevante Regeln bestimmen:
+  // Spezialfall: wenn klar ein Mechanik-Keyword wie "trample" vorkommt, nimm gezielt alle 702.19x
+  let candidateRules;
+  const rulesForLang = getRulesForLanguage(language);
+
+  if (nq.includes("trample")) {
+    candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.19"));
+    candidateRules = candidateRules.slice(0, 10);
+  } else if (nq.includes("lifelink")) {
+    candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.15"));
+    candidateRules = candidateRules.slice(0, 10);
+  } else if (nq.includes("deathtouch")) {
+    candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.2"));
+    candidateRules = candidateRules.slice(0, 10);
+  } else {
+    candidateRules = findRelevantRules(normalizedQuestion, language, 5);
+  }
+
   console.log("candidateRules count:", candidateRules.length);
 
   let contextText = "";
 
   if (candidateRules.length) {
-    // Kontext klein halten: nur Header + max. 3 Folgezeilen
+    // Kontext klein halten: nur Header + ein paar Folgezeilen
+    const maxExtraLines =
+      nq.includes("trample") || nq.includes("lifelink") || nq.includes("deathtouch")
+        ? 8
+        : 3;
+
     contextText = candidateRules
       .map((r) => {
         const lines = r.text.split(/\r?\n/);
         const header = lines[0] || "";
-        const rest = lines.slice(1, 4).join(" ");
+        const rest = lines.slice(1, 1 + maxExtraLines).join(" ");
         return `Rule ${r.number}:\n${header}\n${rest}`;
       })
       .join("\n\n");
   }
 
-  // Sprachspezifischer System-Prompt
+  // Sprachspezifischer System-Prompt (leicht weniger streng, damit er eher eine Regel wählt)
   const systemPromptDE =
     "Du bist ein Experte für die Magic: The Gathering Comprehensive Rules.\n" +
     "Du bekommst AUSZÜGE aus den umfassenden Regeln.\n" +
-    "Du MUSST deine Antwort AUSSCHLIESSLICH auf diese Auszüge stützen.\n" +
-    "Deine Aufgabe: Antworte mit GENAU EINER Regelnummer im Format 000.0 oder 000.0a.\n" +
-    "Die ausgegebene Regelnummer MUSS in den bereitgestellten Auszügen vorkommen.\n" +
-    "Wenn keine der präsentierten Regeln klar zur Frage passt, antworte GENAU: NONE.\n" +
+    "Du SOLLST deine Antwort überwiegend auf diese Auszüge stützen.\n" +
+    "Deine Aufgabe: Wähle die EINE Regelnummer im Format 000.0 oder 000.0a, " +
+    "die am besten zur Frage passt.\n" +
+    "Wenn mehrere Regeln passen, nimm die wichtigste / allgemeinste.\n" +
+    "Nur wenn keine Regel im Kontext erkennbar zur Frage passt, antworte GENAU: NONE.\n" +
     "Erkläre deine Antwort nicht. Gib nur die Regelnummer oder NONE aus.";
 
   const systemPromptEN =
     "You are an expert for Magic: The Gathering Comprehensive Rules.\n" +
     "You will be given EXCERPTS from the Comprehensive Rules.\n" +
-    "You MUST base your answer ONLY on these excerpts.\n" +
-    "Your task: Answer with EXACTLY one comprehensive rules number " +
-    "in the format 000.0 or 000.0a (e.g. 702.2 or 613.1g).\n" +
-    "The rule number you output MUST appear in the provided excerpts.\n" +
-    "If none of the provided rules clearly matches the question, " +
+    "You SHOULD base your answer primarily on these excerpts.\n" +
+    "Your task: Choose the ONE rules number in the format 000.0 or 000.0a " +
+    "that best answers the question.\n" +
+    "If multiple rules are relevant, pick the most important/general one.\n" +
+    "Only if no rule in the context clearly relates to the question, " +
     "answer EXACTLY: NONE.\n" +
     "Do not explain your answer. Output only the rule number or NONE.";
 
@@ -314,8 +334,8 @@ app.post("/classifyRule", async (req, res) => {
     normalizedQuestion.trim() +
     "\n\n" +
     (language === "de"
-      ? "Antwort (nur eine Regelnummer aus den Auszügen oder NONE):"
-      : "Answer (only one rule number from the excerpts, or NONE):");
+      ? "Antwort (nur eine Regelnummer oder NONE):"
+      : "Answer (only one rule number or NONE):");
 
   try {
     const response = await fetch(GROQ_API_URL, {
