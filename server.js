@@ -1,4 +1,4 @@
-// server.js – Version mit DE/EN, Top-5-Regeln, Keyword-Fokus (z.B. Trample)
+// server.js – DE/EN, Mechanik-Fokus (Combat etc.), Top-Context für Groq
 
 import express from "express";
 import cors from "cors";
@@ -86,35 +86,54 @@ function normalizeQuestion(question, language) {
   let q = question.toLowerCase();
 
   if (language === "de") {
-    // einfache Fixes / Synonyme
+    // Trample
     q = q.replace(/tampelschaden/g, "trampelschaden");
     q = q.replace(/trampelschaden/g, "trample");
     q = q.replace(/trampel schaden/g, "trample");
     q = q.replace(/überrennen/g, "trample");
 
+    // Lifelink
     q = q.replace(/lebensverknüpfung/g, "lifelink");
     q = q.replace(/lebensverbindung/g, "lifelink");
 
-    q = q.replace(/todesberu?h?ung/g, "deathtouch");
-    q = q.replace(/todes beru?h?ung/g, "deathtouch");
+    // Deathtouch
+    q = q.replace(/todesberührung/g, "deathtouch");
+    q = q.replace(/todes berührung/g, "deathtouch");
+    q = q.replace(/todesberuhrung/g, "deathtouch");
+    q = q.replace(/todes beruhrung/g, "deathtouch");
 
+    // Flying
     q = q.replace(/flugf[aä]higkeit/g, "flying");
     q = q.replace(/fliegend[e]?/g, "flying");
 
+    // Haste
     q = q.replace(/eil[e]?/g, "haste");
 
+    // First Strike
+    q = q.replace(/erst schlag/g, "erstschlag");
     q = q.replace(/erstschlag/g, "first strike");
     q = q.replace(/firststrike/g, "first strike");
 
-    q = q.replace(/doppelangriff/g, "double strike");
+    // Double Strike (inkl. Tippfehler)
+    q = q.replace(/dooe?pelschlag/g, "doppelschlag");
+    q = q.replace(/dop+elschlag/g, "doppelschlag");
+    q = q.replace(/doppel schlag/g, "doppelschlag");
+    q = q.replace(/doppelangriff/g, "doppelschlag");
+    q = q.replace(/doppelschlag/g, "double strike");
     q = q.replace(/doublestrike/g, "double strike");
 
+    // Indestructible
     q = q.replace(/unzerst[öo]rbar/g, "indestructible");
 
+    // Infect / Wither
     q = q.replace(/vergiftung/g, "infect");
     q = q.replace(/infekt/g, "infect");
-
     q = q.replace(/schw[aä]chung/g, "wither");
+
+    // Kampfschaden / Verteidigen
+    q = q.replace(/kampfschaden/g, "combat damage");
+    q = q.replace(/angreif(en|er)?/g, "attack");
+    q = q.replace(/verteidig(en|er|ende|end)/g, "block");
   } else {
     // einfache englische Fixes (optional)
     q = q.replace(/trampel damage/g, "trample damage");
@@ -251,22 +270,41 @@ app.post("/classifyRule", async (req, res) => {
   const normalizedQuestion = normalizeQuestion(question, language);
   const nq = normalizedQuestion;
 
-  // Relevante Regeln bestimmen:
-  // Spezialfall: wenn klar ein Mechanik-Keyword wie "trample" vorkommt, nimm gezielt alle 702.19x
-  let candidateRules;
   const rulesForLang = getRulesForLanguage(language);
+  let candidateRules = [];
 
+  // Mechanik-/Combat-Fokus: gezielt relevante Kapitel laden
   if (nq.includes("trample")) {
     candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.19"));
-    candidateRules = candidateRules.slice(0, 10);
   } else if (nq.includes("lifelink")) {
     candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.15"));
-    candidateRules = candidateRules.slice(0, 10);
   } else if (nq.includes("deathtouch")) {
     candidateRules = rulesForLang.filter((r) => r.number.startsWith("702.2"));
-    candidateRules = candidateRules.slice(0, 10);
+  } else if (nq.includes("double strike")) {
+    // Double Strike + Combat Damage
+    const ds = rulesForLang.filter((r) => r.number.startsWith("702.4"));
+    const cd = rulesForLang.filter((r) => r.number.startsWith("510."));
+    candidateRules = [...ds, ...cd];
+  } else if (nq.includes("first strike")) {
+    const fs = rulesForLang.filter((r) => r.number.startsWith("702.7"));
+    const cd = rulesForLang.filter((r) => r.number.startsWith("510."));
+    candidateRules = [...fs, ...cd];
+  } else if (
+    nq.includes("combat damage") ||
+    nq.includes("attack") ||
+    nq.includes("block")
+  ) {
+    const cd = rulesForLang.filter((r) => r.number.startsWith("510."));
+    const ds = rulesForLang.filter((r) => r.number.startsWith("702.4"));
+    const fs = rulesForLang.filter((r) => r.number.startsWith("702.7"));
+    candidateRules = [...cd, ...ds, ...fs];
   } else {
+    // generischer Fallback
     candidateRules = findRelevantRules(normalizedQuestion, language, 5);
+  }
+
+  if (candidateRules.length > 10) {
+    candidateRules = candidateRules.slice(0, 10);
   }
 
   console.log("candidateRules count:", candidateRules.length);
@@ -274,11 +312,18 @@ app.post("/classifyRule", async (req, res) => {
   let contextText = "";
 
   if (candidateRules.length) {
-    // Kontext klein halten: nur Header + ein paar Folgezeilen
-    const maxExtraLines =
-      nq.includes("trample") || nq.includes("lifelink") || nq.includes("deathtouch")
-        ? 8
-        : 3;
+    // Kontext klein halten: nur Header + einige Folgezeilen
+    const isCombat =
+      nq.includes("trample") ||
+      nq.includes("lifelink") ||
+      nq.includes("deathtouch") ||
+      nq.includes("double strike") ||
+      nq.includes("first strike") ||
+      nq.includes("combat damage") ||
+      nq.includes("attack") ||
+      nq.includes("block");
+
+    const maxExtraLines = isCombat ? 10 : 3;
 
     contextText = candidateRules
       .map((r) => {
@@ -290,7 +335,7 @@ app.post("/classifyRule", async (req, res) => {
       .join("\n\n");
   }
 
-  // Sprachspezifischer System-Prompt (leicht weniger streng, damit er eher eine Regel wählt)
+  // Sprachspezifischer System-Prompt (etwas weniger streng, damit er eher eine Regel wählt)
   const systemPromptDE =
     "Du bist ein Experte für die Magic: The Gathering Comprehensive Rules.\n" +
     "Du bekommst AUSZÜGE aus den umfassenden Regeln.\n" +
