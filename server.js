@@ -1,4 +1,5 @@
 // server.js – semantische Suche mit lokalen Embeddings (all-MiniLM-L6-v2) + Groq
+// mit erweiterter deutscher Normalisierung
 
 import express from "express";
 import cors from "cors";
@@ -19,9 +20,7 @@ app.use(express.json());
    Regeln + Embeddings laden
    ====================================== */
 
-// Embeddings aus build_embeddings.py
 const EMBEDDINGS_FILE = path.join(process.cwd(), "rules_with_embeddings.json");
-// deutsche Regeln für Anzeige / spätere Nutzung
 const RULES_DE_FILE = path.join(process.cwd(), "MTG-RulesDE.txt");
 
 let rulesWithEmbeddings = []; // [{ number, text, embedding }]
@@ -94,58 +93,149 @@ function normalizeQuestion(question, language) {
 
   if (language === "de") {
     // Mechaniken → englische Schlüsselwörter
+
+    // Trample
     q = q.replace(/tampelschaden/g, "trampelschaden");
     q = q.replace(/trampelschaden/g, "trample");
     q = q.replace(/trampel schaden/g, "trample");
     q = q.replace(/überrennen/g, "trample");
 
+    // Lifelink
     q = q.replace(/lebensverknüpfung/g, "lifelink");
     q = q.replace(/lebensverbindung/g, "lifelink");
+    q = q.replace(/lebensbindung/g, "lifelink");
 
+    // Deathtouch
     q = q.replace(/todesberührung/g, "deathtouch");
     q = q.replace(/todes berührung/g, "deathtouch");
     q = q.replace(/todesberuhrung/g, "deathtouch");
     q = q.replace(/todes beruhrung/g, "deathtouch");
 
+    // Flying
     q = q.replace(/flugf[aä]higkeit/g, "flying");
     q = q.replace(/fliegend[e]?/g, "flying");
 
+    // Haste
     q = q.replace(/eil[e]?/g, "haste");
 
+    // First strike
     q = q.replace(/erst schlag/g, "erstschlag");
     q = q.replace(/erstschlag/g, "first strike");
     q = q.replace(/firststrike/g, "first strike");
 
+    // Double strike
     q = q.replace(/doppel schlag/g, "doppelschlag");
     q = q.replace(/doppelschlag/g, "double strike");
     q = q.replace(/doppelangriff/g, "double strike");
     q = q.replace(/doublestrike/g, "double strike");
 
+    // Indestructible
     q = q.replace(/unzerst[öo]rbar/g, "indestructible");
 
+    // Hexproof / Fluchsicher
+    q = q.replace(/fluchsicher/g, "hexproof");
+    q = q.replace(/fluch sicher/g, "hexproof");
+
+    // Ward
+    q = q.replace(/\bward\b/g, "ward");
+
+    // Vigilance
+    q = q.replace(/w[aä]chterhaft/g, "vigilance");
+    q = q.replace(/w[aä]chter/g, "vigilance");
+
+    // Menace
+    q = q.replace(/bedrohung/g, "menace");
+    q = q.replace(/bedrohlich/g, "menace");
+
+    // Reach
+    q = q.replace(/reichweite/g, "reach");
+
+    // Prowess
+    q = q.replace(/meisterschaft/g, "prowess");
+
+    // Infect / Wither
     q = q.replace(/vergiftung/g, "infect");
     q = q.replace(/infekt/g, "infect");
     q = q.replace(/schw[aä]chung/g, "wither");
 
-    // Schaden / Kampfschaden
+    // Protection
+    q = q.replace(/schutz vor/g, "protection from");
+    q = q.replace(/schutz gegen/g, "protection from");
+
+    // ---------------- Kampf / Schaden ----------------
+
+    // Tödlicher Schaden zuerst, damit danach "schaden" → "damage" nicht dazwischen funkt
+    q = q.replace(/t[öo]dlich(en|er|em)? schaden/g, "lethal damage");
+    q = q.replace(/t[öo]dlichen schaden/g, "lethal damage");
+    q = q.replace(/t[öo]dlicher schaden/g, "lethal damage");
+    q = q.replace(/t[öo]dlicher damage/g, "lethal damage");
+
+    // Allgemeiner Schaden
     q = q.replace(/\bschaden\b/g, "damage");
     q = q.replace(/kampfschaden/g, "combat damage");
 
-    // Marken
+    // Angreifen / Blocken
+    q = q.replace(/angreif(en|er|erinnen|ernde)?/g, "attack");
+    q = q.replace(/greift an/g, "attacks");
+    q = q.replace(/greifen an/g, "attacks");
+    q = q.replace(/block(en|er|erinnen|ende)?/g, "block");
+    q = q.replace(/geblockt/g, "blocked");
+
+    // Stirbt / Tod
+    q = q.replace(/stirbt\b/g, "dies");
+    q = q.replace(/stirbt die kreatur/g, "creature dies");
+    q = q.replace(/stirbt eine kreatur/g, "creature dies");
+    q = q.replace(/stirbt ein(e)? spieler(in)?/g, "player loses the game");
+
+    // ---------------- Marken / Counters ----------------
+
     q = q.replace(/\+1\/\+1[- ]?marke[n]?/g, "+1/+1 counter");
     q = q.replace(/-1\/-1[- ]?marke[n]?/g, "-1/-1 counter");
+    q = q.replace(/zeitmarke[n]?/g, "time counter");
+    q = q.replace(/giftmarke[n]?/g, "poison counter");
+    q = q.replace(/ladungsmarke[n]?/g, "charge counter");
     q = q.replace(/marke[n]?/g, "counter");
 
-    // Verteidigung / Toughness
+    // Toughness / Power
     q = q.replace(/\bverteidigung\b/g, "toughness");
     q = q.replace(/\bwiderstandskraft\b/g, "toughness");
     q = q.replace(/\bresi\b/g, "toughness");
+    q = q.replace(/\bangriffskraft\b/g, "power");
 
-    // Tod / tödlicher Schaden
-    q = q.replace(/t[öo]dlich(en|er|em)? schaden/g, "lethal damage");
-    q = q.replace(/t[öo]dlichen schaden/g, "lethal damage");
-    q = q.replace(/stirbt\b/g, "dies");
-    q = q.replace(/stirbt die kreatur/g, "creature dies");
+    // ---------------- Zonen / Kartentypen ----------------
+
+    q = q.replace(/friedhof\b/g, "graveyard");
+    q = q.replace(/handkarte[n]?/g, "hand");
+    q = q.replace(/\bhand\b/g, "hand");
+    q = q.replace(/bibliothek/g, "library");
+    q = q.replace(/stapel\b/g, "stack");
+    q = q.replace(/exil\b/g, "exile");
+    q = q.replace(/kommandozone/g, "command zone");
+    q = q.replace(/spielfeld/g, "battlefield");
+    q = q.replace(/im spiel/g, "battlefield");
+
+    q = q.replace(/hexerei/g, "sorcery");
+    q = q.replace(/spontanzauber/g, "instant");
+    q = q.replace(/verzauberung/g, "enchantment");
+    q = q.replace(/artefakt/g, "artifact");
+    q = q.replace(/planeswalker/g, "planeswalker");
+    q = q.replace(/\bzauber\b/g, "spell");
+    q = q.replace(/\bbleibende[rn]? zauber\b/g, "permanent");
+
+    // ---------------- Spielstruktur / Trigger ----------------
+
+    q = q.replace(/anwendung von zustandsbasierten aktionen/g, "state-based actions");
+    q = q.replace(/zustandsbasierte aktionen/g, "state-based actions");
+    q = q.replace(/zustandsbasierter effekt/g, "state-based action");
+
+    q = q.replace(/ausl[öo]s(er|en|ende)/g, "trigger");
+    q = q.replace(/ausgel[öo]st/g, "triggered");
+    q = q.replace(/ausl[öo]sende f[aä]higkeit/g, "triggered ability");
+
+    q = q.replace(/ersatz(ef)?fekt/g, "replacement effect");
+    q = q.replace(/ersatz effekte/g, "replacement effects");
+
+    q = q.replace(/mulligan/g, "mulligan");
   } else {
     q = q.replace(/trampel damage/g, "trample damage");
   }
@@ -168,17 +258,12 @@ function cosineSimilarity(a, b) {
 }
 
 /**
- * Sehr einfache, lokale Embedding-Funktion:
- * Wir nutzen die Embeddings aus rules_with_embeddings und vergleichen
- * die Frage mit ihnen, indem wir ein "Pseudo-Embedding" mit Bag-of-Words bauen.
- *
- * Hinweis: Ohne ein zweites echtes Modell sind wir hier limitiert,
- * aber selbst ein grobes Bag-of-Words + Cosine ist besser als gar nichts.
+ * "Pseudo-Embedding" für Fragen:
+ * Nutzt die vorhandenen Embeddings der Regeln und baut
+ * einen Frage-Vektor als Durchschnitt der Embeddings
+ * von Regeln, die einzelne Tokens enthalten.
  */
-
 function embedQuestionNaive(text) {
-  // Baue Vektor im selben Raum wie Regeltexte, indem wir die
-  // Embeddings der Regeln gewichten, in denen Wörter vorkommen.
   const tokens = text
     .split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9]/gi, ""))
@@ -190,7 +275,6 @@ function embedQuestionNaive(text) {
   const vec = new Array(dim).fill(0);
   let count = 0;
 
-  // sehr grob: wenn ein Token im Regeltext vorkommt, addiere dessen Embedding
   for (const token of tokens) {
     const lowerToken = token.toLowerCase();
     for (const r of rulesWithEmbeddings) {
@@ -200,7 +284,7 @@ function embedQuestionNaive(text) {
           vec[i] += emb[i];
         }
         count++;
-        break; // pro Token höchstens ein Treffer
+        break;
       }
     }
   }
