@@ -129,8 +129,10 @@ function normalizeQuestion(question, language) {
     q = q.replace(/doppelangriff/g, "double strike");
     q = q.replace(/doublestrike/g, "double strike");
 
-    // Indestructible
-    q = q.replace(/unzerst[öo]rbar/g, "indestructible");
+    // Indestructible / Unzerstörbarkeit
+    q = q.replace(/unzerst[öo]rbar(?:keit)?/g, "indestructible");
+    q = q.replace(/unzerst[öo]rlichkeit/g, "indestructible");
+    q = q.replace(/nicht zerst[öo]rbar/g, "indestructible");
 
     // Hexproof / Fluchsicher
     q = q.replace(/fluchsicher/g, "hexproof");
@@ -186,6 +188,12 @@ function normalizeQuestion(question, language) {
     q = q.replace(/stirbt die kreatur/g, "creature dies");
     q = q.replace(/stirbt eine kreatur/g, "creature dies");
     q = q.replace(/stirbt ein(e)? spieler(in)?/g, "player loses the game");
+
+    // Zerstören / zerstört
+    q = q.replace(/zerst[öo]ren/g, "destroy");
+    q = q.replace(/zerst[öo]rt\b/g, "destroyed");
+    q = q.replace(/vernichten/g, "destroy");
+
 
     // ---------------- Marken / Counters ----------------
 
